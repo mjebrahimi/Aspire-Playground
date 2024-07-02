@@ -13,8 +13,6 @@ builder.AddServiceDefaults();
 
 builder.Services.AddHttpContextAccessor();
 
-builder.AddSeqEndpoint("seq");
-
 builder.AddRedisClient("redis");
 
 //Uses AddDbContextPool internally for performance reasons.

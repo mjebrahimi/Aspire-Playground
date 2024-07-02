@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
@@ -8,11 +7,6 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using Serilog;
-using Serilog.Enrichers.Span;
-using Serilog.Exceptions;
-using Serilog.Exceptions.Core;
-using Serilog.Exceptions.EntityFrameworkCore.Destructurers;
-using Serilog.Exceptions.MsSqlServer.Destructurers;
 
 namespace Microsoft.Extensions.Hosting;
 
@@ -53,22 +47,13 @@ public static class Extensions
 
                 //Enrich logs with useful meta data
                 .Enrich.FromLogContext()
-                .Enrich.WithSpan()
                 .Enrich.WithClientIp()
-                .Enrich.WithProcessName()
-                .Enrich.WithEnvironmentName()
-                .Enrich.WithDemystifiedStackTraces()
                 .Enrich.WithRequestHeader("User-Agent", "UserAgent") // Enrich logs with request headers like api-key, auth token, etc.
-                .Enrich.WithExceptionDetails(new DestructuringOptionsBuilder()
-                       .WithDefaultDestructurers()
-                       .WithDestructurers([new SqlExceptionDestructurer(), new DbUpdateExceptionDestructurer()]))
 
                 //Console logging is synchronous and this can cause bottlenecks in some deployment scenarios.
                 //For high-volume console logging, consider using Serilog.Sinks.Async to move console writes to a background thread
-                .WriteTo.Async(sink => sink.Console())
-
                 //You can also write logs to File, ElasticSearch, Seq, Application Insights, AWS Cloud Watch, etc.
-                .WriteTo.Seq(context.Configuration.GetConnectionString("seq")!)
+                .WriteTo.Async(sink => sink.Console())
 
                 //Send logs to Aspire Dashboard using OpenTelemetry
                 .WriteTo.OpenTelemetry(options =>
@@ -126,16 +111,10 @@ public static class Extensions
                     // We want to view all traces in development
                     tracing.SetSampler(new AlwaysOnSampler());
                 }
-                else
-                {
-                    // How much percentage of traces to sample on the production
-                    tracing.SetSampler(new ParentBasedSampler(new TraceIdRatioBasedSampler(0.5)));
-                }
 
                 tracing
                     .AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
-                    .AddEntityFrameworkCoreInstrumentation(options => options.SetDbStatementForText = true)
                     .AddSqlClientInstrumentation(options =>
                     {
                         options.RecordException = true;
@@ -154,21 +133,8 @@ public static class Extensions
 
         if (useOtlpExporter)
         {
-            // We use Serilog instead of the default OpenTelemetry logger
-            //builder.Services.Configure<OpenTelemetryLoggerOptions>(logging => logging.AddOtlpExporter());
             builder.Services.ConfigureOpenTelemetryMeterProvider(metrics => metrics.AddOtlpExporter());
-            builder.Services.ConfigureOpenTelemetryTracerProvider(tracing =>
-            {
-                //Export traces to Aspire Dashboard
-                tracing.AddOtlpExporter();
-
-                var seq = builder.Configuration.GetConnectionString("seq");
-                if (string.IsNullOrWhiteSpace(seq) is false)
-                {
-                    //Export traces to Seq
-                    tracing.AddOtlpExporter(options => options.Endpoint = new(seq));
-                }
-            });
+            builder.Services.ConfigureOpenTelemetryTracerProvider(tracing => tracing.AddOtlpExporter());
         }
 
         // Uncomment the following lines to enable the Prometheus exporter (requires the OpenTelemetry.Exporter.Prometheus.AspNetCore package)
@@ -213,18 +179,6 @@ public static class Extensions
         return meterProviderBuilder.AddMeter(
             "Microsoft.AspNetCore.Hosting",
             "Microsoft.AspNetCore.Server.Kestrel",
-            "System.Net.Http",
-            //The following metrics don't work! //https://github.com/dotnet/SqlClient/issues/2211
-            "Microsoft.EntityFrameworkCore",
-            "Microsoft.Data.SqlClient.EventSource");
-
-        // Other built-in meters that can be added
-        // or using metrics.AddAspNetCoreInstrumentation(), metrics.AddHttpClientInstrumentation methods
-        //    .AddMeter("Microsoft.AspNetCore.Http.Connections")
-        //    .AddMeter("Microsoft.AspNetCore.Routing")
-        //    .AddMeter("Microsoft.AspNetCore.Diagnostics")
-        //    .AddMeter("Microsoft.AspNetCore.RateLimiting");
-        //    .AddMeter("System.Net.NameResolution");
+            "System.Net.Http");
     }
-
 }
