@@ -2,6 +2,7 @@ using EasyCaching.Redis;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Serilog;
 using StackExchange.Redis;
 using System.ComponentModel.DataAnnotations;
@@ -174,10 +175,11 @@ public static class DatabaseInitializer
 {
     public static async Task InitializeAsync(this IServiceProvider serviceProvider)
     {
-        await Task.Delay(10000);
-
         await using var scope = serviceProvider.CreateAsyncScope();
         await using var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        await dbContext.WaitForDatabaseToAliveAsync();
+
         //await dbContext.Database.EnsureDeletedAsync();
         await dbContext.Database.EnsureCreatedAsync();
 
@@ -231,6 +233,38 @@ public static class DatabaseInitializer
 #pragma warning restore S6966 // Awaitable method should be used
 
             await dbContext.SaveChangesAsync();
+        }
+    }
+
+    public static async Task WaitForDatabaseToAliveAsync<TDbContext>(this TDbContext dbContext, int maxAttempts = 10, int timeoutSeconds = 10)
+        where TDbContext : DbContext
+    {
+        var logger = dbContext.GetService<ILogger<AppDbContext>>();
+        var connectionStr = dbContext.Database.GetConnectionString();
+        connectionStr = new SqlConnectionStringBuilder(connectionStr) { InitialCatalog = "master" }.ConnectionString;
+        await using var connection = new SqlConnection(connectionStr);
+
+        var attempts = 0;
+        using var cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        while (cancellationTokenSource.IsCancellationRequested is false)
+        {
+            try
+            {
+                if (attempts++ > maxAttempts)
+                    await cancellationTokenSource.CancelAsync();
+
+                await connection.OpenAsync(cancellationTokenSource.Token);
+                await using var command = connection.CreateCommand();
+                command.CommandText = "SELECT 1;";
+                await command.ExecuteNonQueryAsync(cancellationTokenSource.Token);
+                logger.LogInformation("Database connected successfully.");
+                break;
+            }
+            catch (SqlException ex) when (ex.Message == "A connection was successfully established with the server, but then an error occurred during the pre-login handshake. (provider: TCP Provider, error: 0 - An existing connection was forcibly closed by the remote host.)")
+            {
+                logger.LogInformation("Waiting for database to be ready...");
+            }
+            await Task.Delay(1000);
         }
     }
 }
